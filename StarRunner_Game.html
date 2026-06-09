@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Star Runner - Cartoon Game</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d1a; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Segoe UI', Arial, sans-serif; }
+  h1 { color: #f5a623; font-size: 22px; margin-bottom: 10px; letter-spacing: 2px; }
+  #gameWrap { width: 680px; max-width: 98vw; background: #1a1a2e; border-radius: 16px; overflow: hidden; box-shadow: 0 0 40px rgba(245,166,35,0.2); }
+  #hud { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: #16213e; }
+  .hud-box { text-align: center; }
+  .hud-val { font-size: 18px; font-weight: 700; color: #f5a623; }
+  .hud-lbl { font-size: 11px; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+  #missionBox { background: #0f3460; padding: 8px 16px; margin: 0; display: flex; align-items: center; gap: 12px; }
+  #missionText { font-size: 13px; color: #e0e0e0; white-space: nowrap; }
+  #missionBar { flex: 1; height: 8px; background: #1a1a2e; border-radius: 4px; overflow: hidden; }
+  #missionFill { height: 100%; background: #f5a623; border-radius: 4px; transition: width 0.3s; }
+  #missionCount { font-size: 13px; color: #f5a623; font-weight: 700; min-width: 40px; text-align: right; }
+  canvas { display: block; width: 100%; }
+  #instructions { color: #888; font-size: 13px; margin-top: 10px; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>STAR RUNNER</h1>
+<div id="gameWrap">
+  <div id="hud">
+    <div class="hud-box"><div class="hud-val" id="scoreVal">0</div><div class="hud-lbl">Score</div></div>
+    <div class="hud-box"><div class="hud-val" id="coinsVal">0</div><div class="hud-lbl">Coins</div></div>
+    <div class="hud-box"><div class="hud-val" id="livesVal">3</div><div class="hud-lbl">Lives</div></div>
+    <div class="hud-box"><div class="hud-val" id="levelVal">1</div><div class="hud-lbl">Level</div></div>
+    <div class="hud-box"><div class="hud-val" id="highVal">0</div><div class="hud-lbl">Best</div></div>
+  </div>
+  <div id="missionBox">
+    <span id="missionText">Mission: Collect 5 coins</span>
+    <div id="missionBar"><div id="missionFill" style="width:0%"></div></div>
+    <span id="missionCount">0/5</span>
+  </div>
+  <canvas id="gameCanvas" width="680" height="320"></canvas>
+</div>
+<p id="instructions">SPACE or click/tap to JUMP &nbsp;|&nbsp; Collect coins &nbsp;|&nbsp; Avoid obstacles</p>
+
+<script>
+// ============================================================
+//  STAR RUNNER - Complete Game Code
+//  Made for Ayesha | A to Z complete
+// ============================================================
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = 680;
+canvas.height = 320;
+
+// ---- SOUND ENGINE (Web Audio API - no files needed) --------
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let actx;
+function getACtx() { if (!actx) { actx = new AudioCtx(); } return actx; }
+
+function playTone(freq, type, dur, vol) {
+  try {
+    const a = getACtx(), o = a.createOscillator(), g = a.createGain();
+    o.connect(g); g.connect(a.destination);
+    o.type = type;
+    o.frequency.setValueAtTime(freq, a.currentTime);
+    g.gain.setValueAtTime(vol || 0.2, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + dur);
+    o.start(); o.stop(a.currentTime + dur);
+  } catch(e) {}
+}
+
+// Sound effects
+function sfxCoin()    { playTone(880,'sine',0.12,0.3); setTimeout(()=>playTone(1100,'sine',0.1,0.2),80); }
+function sfxJump()    { playTone(300,'square',0.05,0.15); playTone(500,'square',0.1,0.12); }
+function sfxHit()     { playTone(150,'sawtooth',0.25,0.3); setTimeout(()=>playTone(100,'sawtooth',0.2,0.2),100); }
+function sfxLevelUp() { [440,550,660,880].forEach((f,i)=>setTimeout(()=>playTone(f,'sine',0.15,0.25),i*80)); }
+function sfxMission() { [660,880,1100].forEach((f,i)=>setTimeout(()=>playTone(f,'triangle',0.18,0.3),i*100)); }
+function sfxGameOver(){ [330,220,150].forEach((f,i)=>setTimeout(()=>playTone(f,'sawtooth',0.3,0.3),i*120)); }
+
+// ---- CONSTANTS ---------------------------------------------
+const GROUND = 260;
+
+// ---- GAME STATE --------------------------------------------
+const player = {
+  x: 80, y: GROUND, w: 36, h: 44,
+  vy: 0, onGround: true,
+  frame: 0, invincible: 0
+};
+
+const state = {
+  score: 0, coins: 0, lives: 3, level: 1,
+  speed: 3.5, running: false, gameOver: false,
+  frame: 0, bgX: 0, cloudX: 0,
+  missionCoins: 0, missionTarget: 5, missionFlash: 0,
+  particles: [], highScore: 0
+};
+
+let obstacles = [], collectibles = [];
+let spawnTimer = 0, collectSpawn = 0;
+
+// ---- DRAW FUNCTIONS ----------------------------------------
+
+function drawSky() {
+  // Sky background
+  ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, 680, 270);
+  // Ground layers
+  ctx.fillStyle = '#16213e'; ctx.fillRect(0, 270, 680, 50);
+  ctx.fillStyle = '#0f3460'; ctx.fillRect(0, 285, 680, 35);
+  // Moving clouds
+  for (let i = 0; i < 6; i++) {
+    const cx = (((state.cloudX * 0.3) + i * 120) % 720) - 40;
+    ctx.fillStyle = 'rgba(255,255,255,0.07)';
+    ctx.beginPath(); ctx.ellipse(cx, 50 + i * 8, 40, 18, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx + 20, 44 + i * 8, 28, 14, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  // Stars
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  [[60,30],[200,80],[380,20],[520,60],[640,35],[120,55],[450,40],[310,15]].forEach(([sx,sy]) => {
+    ctx.beginPath(); ctx.arc(sx, sy, 1.5, 0, Math.PI * 2); ctx.fill();
+  });
+}
+
+function drawGround() {
+  ctx.fillStyle = '#3b6d11'; ctx.fillRect(0, GROUND + player.h, 680, 8);
+  ctx.fillStyle = '#639922'; ctx.fillRect(0, GROUND + player.h, 680, 4);
+  ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, GROUND + player.h + 8, 680, 60);
+  // Moving ground lines
+  for (let i = 0; i < 8; i++) {
+    const tx = ((state.bgX * 0.8) % 100 + i * 100) % 680;
+    ctx.fillStyle = '#27500a';
+    ctx.fillRect(tx, GROUND + player.h + 8, 60, 3);
+  }
+}
+
+function drawPlayer() {
+  const { x, y, w, h, invincible } = player;
+  // Blink when invincible
+  if (invincible > 0 && Math.floor(invincible / 4) % 2 === 0) return;
+
+  const legOff = state.running ? Math.sin(state.frame * 0.25) * 6 : 0;
+
+  // Head
+  ctx.fillStyle = '#f5a623';
+  ctx.beginPath(); ctx.ellipse(x + w / 2, y + 14, 14, 14, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Eyes white
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(x + w / 2 - 5, y + 11, 5, 5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + w / 2 + 5, y + 11, 5, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Pupils
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(x + w / 2 - 4, y + 11, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + w / 2 + 6, y + 11, 2.5, 0, Math.PI * 2); ctx.fill();
+
+  // Smile
+  ctx.fillStyle = '#ff6b6b';
+  ctx.beginPath(); ctx.ellipse(x + w / 2, y + 18, 6, 4, 0, Math.PI); ctx.fill();
+
+  // Body
+  ctx.fillStyle = '#f5a623';
+  ctx.fillRect(x + 8, y + 28, 20, 18);
+
+  // Legs
+  ctx.fillStyle = '#e67e22';
+  ctx.fillRect(x + 6, y + 46, 8, 10 + legOff);
+  ctx.fillRect(x + 22, y + 46, 8, 10 - legOff);
+
+  // Shoes
+  ctx.fillStyle = '#795548';
+  ctx.fillRect(x + 4, y + 55 + legOff, 12, 5);
+  ctx.fillRect(x + 20, y + 55 - legOff, 12, 5);
+
+  // Arms
+  ctx.fillStyle = '#f5a623';
+  ctx.fillRect(x - 4, y + 28, 8, 14);
+  ctx.fillRect(x + w - 4, y + 28, 8, 14);
+}
+
+function drawObstacle(o) {
+  if (o.type === 'cactus') {
+    ctx.fillStyle = '#2d6a4f';
+    ctx.fillRect(o.x + 8, o.y, 14, o.h);
+    ctx.fillRect(o.x, o.y + 14, 10, 12);
+    ctx.fillRect(o.x + 20, o.y + 8, 10, 12);
+    ctx.fillStyle = '#40916c';
+    ctx.fillRect(o.x + 10, o.y, 10, o.h - 4);
+  } else {
+    // Ghost enemy
+    ctx.fillStyle = '#6c3483';
+    ctx.beginPath(); ctx.ellipse(o.x + o.w / 2, o.y + o.h / 2, o.w / 2, o.h / 2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#9b59b6';
+    ctx.beginPath(); ctx.ellipse(o.x + o.w / 2, o.y + o.h / 2 - 4, o.w / 2 - 4, o.h / 2 - 4, 0, 0, Math.PI * 2); ctx.fill();
+    // Ghost eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(o.x + o.w / 2 - 4, o.y + o.h / 2 - 8, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(o.x + o.w / 2 + 4, o.y + o.h / 2 - 6, 2, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawCoin(c) {
+  const bob = Math.sin(state.frame * 0.1 + c.x) * 3;
+  ctx.save();
+  ctx.translate(c.x + 12, c.y + 12 + bob);
+  ctx.fillStyle = '#f5a623';
+  ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#f5a623';
+  ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('$', 0, 0);
+  ctx.restore();
+}
+
+function drawStar(c) {
+  const bob = Math.sin(state.frame * 0.12 + c.x) * 4;
+  ctx.save();
+  ctx.translate(c.x + 12, c.y + 10 + bob);
+  ctx.fillStyle = '#ffe600';
+  for (let i = 0; i < 5; i++) {
+    ctx.rotate(Math.PI * 2 / 5);
+    ctx.beginPath();
+    ctx.moveTo(0, -12); ctx.lineTo(3, -5); ctx.lineTo(12, -4);
+    ctx.lineTo(5, 2); ctx.lineTo(7, 12); ctx.lineTo(0, 7);
+    ctx.lineTo(-7, 12); ctx.lineTo(-5, 2); ctx.lineTo(-12, -4);
+    ctx.lineTo(-3, -5); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function spawnParticle(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    state.particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 5,
+      vy: (Math.random() - 3) * 3,
+      alpha: 1, color,
+      size: Math.random() * 6 + 3
+    });
+  }
+}
+
+function updateParticles() {
+  state.particles = state.particles.filter(p => {
+    p.x += p.vx; p.y += p.vy; p.vy += 0.2; p.alpha -= 0.04;
+    ctx.globalAlpha = Math.max(0, p.alpha);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    return p.alpha > 0;
+  });
+}
+
+function drawOverlay() {
+  ctx.fillStyle = 'rgba(10,10,30,0.85)';
+  ctx.fillRect(0, 0, 680, 320);
+
+  if (!state.running && !state.gameOver) {
+    // Title screen
+    ctx.fillStyle = '#f5a623';
+    ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('STAR RUNNER', 340, 95);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('Collect coins & stars!  Avoid cactus & ghosts!', 340, 132);
+    ctx.fillText('SPACE or click/tap to JUMP', 340, 158);
+
+    ctx.fillStyle = '#f5a623';
+    ctx.font = '13px sans-serif'; ctx.fillStyle = '#aaa';
+    ctx.fillText('Complete missions to earn bonus points!', 340, 180);
+
+    // Play button
+    ctx.fillStyle = '#f5a623';
+    ctx.beginPath(); ctx.roundRect(240, 200, 200, 52, 26); ctx.fill();
+    ctx.fillStyle = '#1a1a2e';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText('PLAY NOW!', 340, 232);
+
+  } else if (state.gameOver) {
+    // Game over screen
+    ctx.fillStyle = '#ff6b6b';
+    ctx.font = 'bold 36px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER!', 340, 85);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px sans-serif';
+    ctx.fillText('Score: ' + Math.floor(state.score), 340, 122);
+    ctx.fillText('Coins: ' + state.coins, 340, 150);
+
+    ctx.fillStyle = '#f5a623';
+    ctx.font = '14px sans-serif';
+    ctx.fillText('Best: ' + state.highScore, 340, 173);
+
+    // Replay button
+    ctx.fillStyle = '#f5a623';
+    ctx.beginPath(); ctx.roundRect(240, 188, 200, 52, 26); ctx.fill();
+    ctx.fillStyle = '#1a1a2e';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText('PLAY AGAIN!', 340, 220);
+
+    ctx.fillStyle = '#888';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('SPACE or click/tap to retry', 340, 258);
+  }
+}
+
+function drawMissionComplete() {
+  ctx.fillStyle = 'rgba(0,200,100,0.93)';
+  ctx.beginPath(); ctx.roundRect(160, 96, 360, 84, 18); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('MISSION COMPLETE!', 340, 132);
+  ctx.font = '15px sans-serif';
+  ctx.fillText('+500 BONUS POINTS! Next mission: ' + state.missionTarget + ' coins', 340, 160);
+}
+
+// ---- COLLISION DETECTION -----------------------------------
+function collides(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x &&
+         a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+// ---- UI UPDATES --------------------------------------------
+function updateMissionUI() {
+  const pct = Math.min(100, Math.round(state.missionCoins / state.missionTarget * 100));
+  document.getElementById('missionFill').style.width = pct + '%';
+  document.getElementById('missionCount').textContent = state.missionCoins + '/' + state.missionTarget;
+  document.getElementById('missionText').textContent = 'Mission: Collect ' + state.missionTarget + ' coins';
+}
+
+function updateHUD() {
+  document.getElementById('scoreVal').textContent = Math.floor(state.score);
+  document.getElementById('coinsVal').textContent = state.coins;
+  document.getElementById('livesVal').textContent = state.lives;
+  document.getElementById('levelVal').textContent = state.level;
+  document.getElementById('highVal').textContent = state.highScore;
+}
+
+// ---- JUMP --------------------------------------------------
+function jump() {
+  if (!state.running || state.gameOver) { startGame(); return; }
+  if (player.onGround) {
+    player.vy = -13;
+    player.onGround = false;
+    sfxJump();
+  }
+}
+
+// ---- START / RESTART ---------------------------------------
+function startGame() {
+  state.score = 0; state.coins = 0; state.lives = 3;
+  state.level = 1; state.speed = 3.5;
+  state.running = true; state.gameOver = false;
+  state.frame = 0; state.bgX = 0; state.cloudX = 0;
+  state.missionCoins = 0; state.missionTarget = 5;
+  state.missionFlash = 0; state.particles = [];
+  player.y = GROUND; player.vy = 0;
+  player.onGround = true; player.invincible = 0;
+  obstacles.length = 0; collectibles.length = 0;
+  spawnTimer = 0; collectSpawn = 0;
+  updateMissionUI(); updateHUD();
+}
+
+// ---- MAIN GAME LOOP ----------------------------------------
+function loop() {
+  requestAnimationFrame(loop);
+  ctx.clearRect(0, 0, 680, 320);
+  drawSky();
+  drawGround();
+
+  if (!state.running || state.gameOver) { drawOverlay(); return; }
+
+  state.frame++;
+  state.bgX += state.speed;
+  state.cloudX += 0.8;
+
+  // Player physics
+  player.vy += 0.7;
+  player.y += player.vy;
+  if (player.y >= GROUND) {
+    player.y = GROUND; player.vy = 0; player.onGround = true;
+  }
+  if (player.invincible > 0) player.invincible--;
+
+  // Spawn obstacles
+  spawnTimer++;
+  if (spawnTimer > Math.max(55, 90 - state.level * 5)) {
+    const r = Math.random();
+    if (r < 0.5) {
+      obstacles.push({ x: 700, y: GROUND + 14, w: 30, h: 46, type: 'cactus' });
+    } else {
+      obstacles.push({ x: 700, y: GROUND - 10, w: 36, h: 36, type: 'ghost' });
+    }
+    spawnTimer = 0;
+  }
+
+  // Spawn collectibles
+  collectSpawn++;
+  if (collectSpawn > 40) {
+    const type = Math.random() < 0.7 ? 'coin' : 'star';
+    collectibles.push({ x: 700, y: GROUND - Math.random() * 60, w: 24, h: 24, type });
+    collectSpawn = 0;
+  }
+
+  // Update & draw obstacles
+  obstacles = obstacles.filter(o => {
+    o.x -= state.speed;
+    drawObstacle(o);
+    if (player.invincible === 0 &&
+        collides(player, { x: o.x + 6, y: o.y + 4, w: o.w - 10, h: o.h - 8 })) {
+      state.lives--;
+      player.invincible = 80;
+      sfxHit();
+      spawnParticle(player.x + 18, player.y + 20, '#ff6b6b', 10);
+      if (state.lives <= 0) {
+        state.gameOver = true;
+        state.highScore = Math.max(Math.floor(state.score), state.highScore);
+        sfxGameOver();
+      }
+      updateHUD();
+    }
+    return o.x > -60;
+  });
+
+  // Update & draw collectibles
+  collectibles = collectibles.filter(c => {
+    c.x -= state.speed;
+    if (c.type === 'coin') drawCoin(c); else drawStar(c);
+    if (collides(player, { x: c.x, y: c.y, w: 24, h: 24 })) {
+      if (c.type === 'coin') {
+        state.coins++; state.score += 10;
+        sfxCoin();
+        spawnParticle(c.x + 12, c.y + 12, '#f5a623', 8);
+        state.missionCoins++;
+        if (state.missionCoins >= state.missionTarget) {
+          state.missionFlash = 90;
+          state.score += 500;
+          sfxMission();
+          state.missionTarget += 5;
+          state.missionCoins = 0;
+        }
+        updateMissionUI();
+      } else {
+        state.score += 50;
+        sfxCoin();
+        spawnParticle(c.x + 12, c.y + 12, '#ffe600', 12);
+      }
+      updateHUD();
+      return false;
+    }
+    return c.x > -40;
+  });
+
+  // Score increases over time
+  state.score += 0.05;
+
+  // Level up
+  const newLevel = 1 + Math.floor(state.score / 500);
+  if (newLevel > state.level) {
+    state.level = newLevel;
+    state.speed = 3.5 + state.level * 0.4;
+    sfxLevelUp();
+    updateHUD();
+  }
+
+  document.getElementById('scoreVal').textContent = Math.floor(state.score);
+
+  drawPlayer();
+  updateParticles();
+
+  if (state.missionFlash > 0) {
+    drawMissionComplete();
+    state.missionFlash--;
+  }
+
+  // Controls hint
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '11px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('SPACE or TAP to jump', 8, 318);
+}
+
+// ---- INPUT -------------------------------------------------
+canvas.addEventListener('click', jump);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); jump(); }, { passive: false });
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    jump();
+  }
+});
+
+// ---- START -------------------------------------------------
+loop();
+</script>
+</body>
+</html>
